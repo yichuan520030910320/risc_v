@@ -34,20 +34,18 @@ cmd_family cmd_TYPE_check(int temp) {
     else if (temp == 0b0110011) { return R; }
     else if (temp == 0b0001111) { return I_fence; }
     else if (temp == 0b1110011) { return I_ecall; }
-
 }
-int getimm(int index,  cmd_family cmdtmp) {//todo 优化立即数！！！！！
+int getimm(int index,  cmd_family cmdtmp) {
     if (cmdtmp == U_lui || cmdtmp == U_auipc) {
         int nummm = get_bits(index, 31, 12);
         nummm = nummm << 12;
         int ans = nummm;
         return ans;
-
     }
     if (cmdtmp == J) {
         int temp = get_bits(index, 31, 31);
         if (temp == 1) {
-            temp = (temp << 12) - 1;
+            temp = (temp << 12) - 1;// 111111111111   12
             temp = temp << 8;
         }
         temp+=get_bits(index,19,12);
@@ -73,18 +71,18 @@ int getimm(int index,  cmd_family cmdtmp) {//todo 优化立即数！！！！！
     } else if (cmdtmp == I_l || cmdtmp == I_addi || cmdtmp == I_jair) {
         int temp = get_bits(index, 31, 31);
         if (temp == 1) {
-            temp = (temp << 21) - 1;
-            temp = temp << 11;
+            temp = (temp << 20) - 1;
+            temp = temp << 12;
         }
-        temp+=get_bits(index,30,20);
+        temp+=get_bits(index,31,20);
         return temp;
     } else if (cmdtmp == S) {
         int temp = get_bits(index, 31, 31);
         if (temp == 1) {
-            temp = (temp << 21) - 1;
-            temp = temp << 6;
+            temp = (temp << 20) - 1;
+            temp = temp << 7;
         }
-        temp+=get_bits(index,30,25);
+        temp+=get_bits(index,31,25);
         temp<<=5;
         temp+=get_bits(index,11,7);
         return temp;
