@@ -9,6 +9,10 @@ int get_bits(int num, int high, int low) {
 }
 unsigned char MEM[500000000];
 unsigned int reg[33] = {0};
+int predict[4096] = {0};//分支预测四位饱和计数器
+int hashpc(int pc) {
+    return( pc / 4 + 11)%4095;
+}
 int pc = 0, rdpos, rs1pos, rs2pos, imm, rdpos_data, rs1pos_data, rs2pos_data, fun3, fun7;
 int reg_to_writenum[33] = {0};
 int write_rd_data, output;
@@ -32,9 +36,7 @@ public:
     cmd_family nowtype;
 
 } IF_ID, ID_EX, EX_MEM, MEM_WB;
-
 bool IF_oc = true, ID_oc = false, EX_oc = false, MEM_oc = false, WB_oc = false;
-
 cmd_family cmd_TYPE_check(int temp) {
     if (temp == 0b0110111) return U_lui;
     else if (temp == 0b0010111) { return U_auipc; }
@@ -48,7 +50,6 @@ cmd_family cmd_TYPE_check(int temp) {
     else if (temp == 0b0001111) { return I_fence; }
     else if (temp == 0b1110011) { return I_ecall; }
 }
-
 int getimm(int index, cmd_family cmdtmp) {
     if (cmdtmp == U_lui || cmdtmp == U_auipc) {
         int nummm = get_bits(index, 31, 12);
@@ -104,8 +105,6 @@ int getimm(int index, cmd_family cmdtmp) {
 
 }
 
-int cntt = 0;
-
 void _IF() {//处理出指令的十进制表示和可能跳转的位置
     if (ID_oc)return;
     index1 = int(MEM[pc]) + int(MEM[pc + 1] << 8) + int(MEM[pc + 2] << 16) + int(MEM[pc + 3] << 24);
@@ -158,6 +157,42 @@ void _ID() {//（解析）处理出操作类型，寄存器对象，寄存器的
     if (cmd_type == I_jair) {
         pc = (imm + rs1pos_data) & ~1;
     }
+    if (cmd_type == B) {
+        fun3 = get_bits(IF_ID.core_cmd, 14, 12);
+        if (fun3 == 0) {//beq
+            if (rs1pos_data == rs2pos_data && (predict[hashpc(IF_ID.pc_)] > 1)) {
+                pc = IF_ID.pc_ + imm;
+                ID_oc = 0;
+            }
+        } else if (fun3 == 1) {//bne
+
+            if (rs1pos_data != rs2pos_data && (predict[hashpc(IF_ID.pc_)] > 1)) {
+                pc = IF_ID.pc_ + imm;
+                ID_oc = 0;
+            }
+        } else if (fun3 == 4) {//blt
+            if ((signed) rs1pos_data < (signed) rs2pos_data && (predict[hashpc(IF_ID.pc_)] > 1)) {
+                pc = IF_ID.pc_ + imm;
+                ID_oc = 0;
+            }
+        } else if (fun3 == 5) {//bge
+            if (rs1pos_data >= rs2pos_data && (predict[hashpc(IF_ID.pc_)] > 1)) {
+                pc = IF_ID.pc_ + imm;
+                ID_oc = 0;
+            }
+        } else if (fun3 == 6) {//bltu
+            if ((unsigned int) rs1pos_data < (unsigned int) rs2pos_data && (predict[hashpc(IF_ID.pc_)] > 1)) {
+                pc = IF_ID.pc_ + imm;
+                ID_oc = 0;
+            }
+        } else if (fun3 == 7) {//bgeu
+            if ((unsigned int) rs1pos_data >= (unsigned int) rs2pos_data && (predict[hashpc(IF_ID.pc_)] > 1)) {
+                pc = IF_ID.pc_ + imm;
+                ID_oc = 0;
+            }
+        }
+    }
+
     ID_oc = false;
     EX_oc = true;
     ID_EX.nowtype = cmd_type;
@@ -170,7 +205,7 @@ void _ID() {//（解析）处理出操作类型，寄存器对象，寄存器的
     ID_EX.imm = imm;
     ID_EX.rd = rdpos;
 };
-
+int win=0,defeat=0;
 void _EX() {//执行出要写入寄存器的值，计算已经解析好的值
     if (!EX_oc || MEM_oc) return;
     cmd_type = ID_EX.nowtype;
@@ -192,36 +227,242 @@ void _EX() {//执行出要写入寄存器的值，计算已经解析好的值
     } else if (cmd_type == B) {
         fun3 = get_bits(ID_EX.core_cmd, 14, 12);
         if (fun3 == 0) {//beq
+
             if (ID_EX.rs1_data == ID_EX.rs2_data) {
-                pc = ID_EX.pc_ + ID_EX.imm;
-                EX_oc = 0, ID_oc = 0;
+int x=predict[hashpc(ID_EX.pc_)];
+                if (predict[hashpc(ID_EX.pc_)] == 0) {//预测失败，阻塞下一步，改变PC
+                    defeat++;
+                    predict[hashpc(ID_EX.pc_)]++;
+                    pc = ID_EX.pc_ + ID_EX.imm;
+                    EX_oc = 0, ID_oc = 0;
+                } else if (predict[hashpc(ID_EX.pc_)] == 1) {
+                    defeat++;
+                    predict[hashpc(ID_EX.pc_)]++;
+                    pc = ID_EX.pc_ + ID_EX.imm;
+                    EX_oc = 0, ID_oc = 0;
+                } else if (predict[hashpc(ID_EX.pc_)] == 2) {//预测成功，二位饱和计数器继续加上
+                    win++;
+                    predict[hashpc(ID_EX.pc_)]++;
+                    EX_oc = 0;
+                } else {
+                    win++;
+                    EX_oc = 0;
+                }
+//                pc = ID_EX.pc_ + ID_EX.imm;
+//                EX_oc = 0, ID_oc = 0;
+            } else {
+                if (predict[hashpc(ID_EX.pc_)] == 0) {
+win++;
+                } else if (predict[hashpc(ID_EX.pc_)] == 1) {
+                    win++;
+                    predict[hashpc(ID_EX.pc_)]--;
+                } else if (predict[hashpc(ID_EX.pc_)] == 2) {//预测失败，阻塞下一步，重新进行下一步的执行
+                    defeat++;
+                    predict[hashpc(ID_EX.pc_)]--;
+                    ID_oc = 0, EX_oc = 0;
+                    pc = ID_EX.pc_ + 4;
+                } else {
+                    defeat++;
+                    predict[hashpc(ID_EX.pc_)]--;
+                    ID_oc = 0, EX_oc = 0;
+                    pc = ID_EX.pc_ + 4;
+                }
             }
         } else if (fun3 == 1) {//bne
 
             if (ID_EX.rs1_data != ID_EX.rs2_data) {
-                pc = ID_EX.pc_ + ID_EX.imm;
-                EX_oc = 0, ID_oc = 0;
+
+                if (predict[hashpc(ID_EX.pc_)] == 0) {//预测失败，阻塞下一步，改变PC
+                    defeat++;
+                    predict[hashpc(ID_EX.pc_)]++;
+                    pc = ID_EX.pc_ + ID_EX.imm;
+                    EX_oc = 0, ID_oc = 0;
+                } else if (predict[hashpc(ID_EX.pc_)] == 1) {
+                    defeat++;
+                    predict[hashpc(ID_EX.pc_)]++;
+                    pc = ID_EX.pc_ + ID_EX.imm;
+                    EX_oc = 0, ID_oc = 0;
+                } else if (predict[hashpc(ID_EX.pc_)] == 2) {//预测成功，二位饱和计数器继续加上
+                    win++;
+                    predict[hashpc(ID_EX.pc_)]++;
+                    EX_oc = 0;
+                } else {
+                    win++;
+                    EX_oc = 0;
+                }
+            } else {
+                if (predict[hashpc(ID_EX.pc_)] == 0) {
+                    win++;
+
+                } else if (predict[hashpc(ID_EX.pc_)] == 1) {
+                    win++;
+                    predict[hashpc(ID_EX.pc_)]--;
+                } else if (predict[hashpc(ID_EX.pc_)] == 2) {//预测失败，阻塞下一步，重新进行下一步的执行
+                    defeat++;
+                    predict[hashpc(ID_EX.pc_)]--;
+                    ID_oc = 0, EX_oc = 0;
+                    pc = ID_EX.pc_ + 4;
+                } else {
+                    defeat++;
+                    predict[hashpc(ID_EX.pc_)]--;
+                    ID_oc = 0, EX_oc = 0;
+                    pc = ID_EX.pc_ + 4;
+                }
             }
         } else if (fun3 == 4) {//blt
             if ((signed) ID_EX.rs1_data < (signed) ID_EX.rs2_data) {
-                pc = ID_EX.pc_ + ID_EX.imm;
-                EX_oc = 0, ID_oc = 0;
+                if (predict[hashpc(ID_EX.pc_)] == 0) {//预测失败，阻塞下一步，改变PC
+                    defeat++;
+                    predict[hashpc(ID_EX.pc_)]++;
+                    pc = ID_EX.pc_ + ID_EX.imm;
+                    EX_oc = 0, ID_oc = 0;
+                } else if (predict[hashpc(ID_EX.pc_)] == 1) {
+                    defeat++;
+                    predict[hashpc(ID_EX.pc_)]++;
+                    pc = ID_EX.pc_ + ID_EX.imm;
+                    EX_oc = 0, ID_oc = 0;
+                } else if (predict[hashpc(ID_EX.pc_)] == 2) {//预测成功，二位饱和计数器继续加上
+                    win++;
+                    predict[hashpc(ID_EX.pc_)]++;
+                    EX_oc = 0;
+                } else {
+                    win++;
+                    EX_oc = 0;
+                }
+            } else{
+                if (predict[hashpc(ID_EX.pc_)] == 0) {
+                    win++;
+
+                } else if (predict[hashpc(ID_EX.pc_)] == 1) {
+                    win++;
+                    predict[hashpc(ID_EX.pc_)]--;
+                } else if (predict[hashpc(ID_EX.pc_)] == 2) {//预测失败，阻塞下一步，重新进行下一步的执行
+                    defeat++;
+                    predict[hashpc(ID_EX.pc_)]--;
+                    ID_oc = 0, EX_oc = 0;
+                    pc = ID_EX.pc_ + 4;
+                } else {
+                    defeat++;
+                    predict[hashpc(ID_EX.pc_)]--;
+                    ID_oc = 0, EX_oc = 0;
+                    pc = ID_EX.pc_ + 4;
+                }
             }
         } else if (fun3 == 5) {//bge
             if (ID_EX.rs1_data >= ID_EX.rs2_data) {
-                pc = ID_EX.pc_ + ID_EX.imm;
-                EX_oc = 0, ID_oc = 0;
+                if (predict[hashpc(ID_EX.pc_)] == 0) {//预测失败，阻塞下一步，改变PC
+                    defeat++;
+                    predict[hashpc(ID_EX.pc_)]++;
+                    pc = ID_EX.pc_ + ID_EX.imm;
+                    EX_oc = 0, ID_oc = 0;
+                } else if (predict[hashpc(ID_EX.pc_)] == 1) {
+                    defeat++;
+                    predict[hashpc(ID_EX.pc_)]++;
+                    pc = ID_EX.pc_ + ID_EX.imm;
+                    EX_oc = 0, ID_oc = 0;
+                } else if (predict[hashpc(ID_EX.pc_)] == 2) {//预测成功，二位饱和计数器继续加上
+                    win++;
+                    predict[hashpc(ID_EX.pc_)]++;
+                    EX_oc = 0;
+                } else {
+                    win++;
+                    EX_oc = 0;
+                }
+            } else{
+                if (predict[hashpc(ID_EX.pc_)] == 0) {
+win++;
+                } else if (predict[hashpc(ID_EX.pc_)] == 1) {
+                    win++;
+                    predict[hashpc(ID_EX.pc_)]--;
+                } else if (predict[hashpc(ID_EX.pc_)] == 2) {//预测失败，阻塞下一步，重新进行下一步的执行
+                    defeat++;
+                    predict[hashpc(ID_EX.pc_)]--;
+                    ID_oc = 0, EX_oc = 0;
+                    pc = ID_EX.pc_ + 4;
+                } else {
+                    defeat++;
+                    predict[hashpc(ID_EX.pc_)]--;
+                    ID_oc = 0, EX_oc = 0;
+                    pc = ID_EX.pc_ + 4;
+                }
             }
         } else if (fun3 == 6) {//bltu
             if ((unsigned int) ID_EX.rs1_data < (unsigned int) ID_EX.rs2_data) {
-                pc = ID_EX.pc_ + ID_EX.imm;
-                EX_oc = 0, ID_oc = 0;
+                if (predict[hashpc(ID_EX.pc_)] == 0) {//预测失败，阻塞下一步，改变PC
+                    defeat++;
+                    predict[hashpc(ID_EX.pc_)]++;
+                    pc = ID_EX.pc_ + ID_EX.imm;
+                    EX_oc = 0, ID_oc = 0;
+                } else if (predict[hashpc(ID_EX.pc_)] == 1) {
+                    defeat++;
+                    predict[hashpc(ID_EX.pc_)]++;
+                    pc = ID_EX.pc_ + ID_EX.imm;
+                    EX_oc = 0, ID_oc = 0;
+                } else if (predict[hashpc(ID_EX.pc_)] == 2) {//预测成功，二位饱和计数器继续加上
+                    win++;
+                    predict[hashpc(ID_EX.pc_)]++;
+                    EX_oc = 0;
+                } else {
+                    win++;
+                    EX_oc = 0;
+                }
+            } else{
+                if (predict[hashpc(ID_EX.pc_)] == 0) {
+                    win++;
+
+                } else if (predict[hashpc(ID_EX.pc_)] == 1) {
+                    win++;
+                    predict[hashpc(ID_EX.pc_)]--;
+                } else if (predict[hashpc(ID_EX.pc_)] == 2) {//预测失败，阻塞下一步，重新进行下一步的执行
+                    defeat++;
+                    predict[hashpc(ID_EX.pc_)]--;
+                    ID_oc = 0, EX_oc = 0;
+                    pc = ID_EX.pc_ + 4;
+                } else {
+                    defeat++;
+                    predict[hashpc(ID_EX.pc_)]--;
+                    ID_oc = 0, EX_oc = 0;
+                    pc = ID_EX.pc_ + 4;
+                }
             }
         } else if (fun3 == 7) {//bgeu
 
             if ((unsigned int) ID_EX.rs1_data >= (unsigned int) ID_EX.rs2_data) {
-                pc = ID_EX.pc_ + ID_EX.imm;
-                EX_oc = 0, ID_oc = 0;
+                if (predict[hashpc(ID_EX.pc_)] == 0) {//预测失败，阻塞下一步，改变PC
+                    defeat++;
+                    predict[hashpc(ID_EX.pc_)]++;
+                    pc = ID_EX.pc_ + ID_EX.imm;
+                    EX_oc = 0, ID_oc = 0;
+                } else if (predict[hashpc(ID_EX.pc_)] == 1) {
+                    defeat++;
+                    predict[hashpc(ID_EX.pc_)]++;
+                    pc = ID_EX.pc_ + ID_EX.imm;
+                    EX_oc = 0, ID_oc = 0;
+                } else if (predict[hashpc(ID_EX.pc_)] == 2) {//预测成功，二位饱和计数器继续加上
+                    win++;
+                    predict[hashpc(ID_EX.pc_)]++;
+                    EX_oc = 0;
+                } else {
+                    win++;
+                    EX_oc = 0;
+                }
+            } else{
+                if (predict[hashpc(ID_EX.pc_)] == 0) {
+win++;
+                } else if (predict[hashpc(ID_EX.pc_)] == 1) {
+                    win++;
+                    predict[hashpc(ID_EX.pc_)]--;
+                } else if (predict[hashpc(ID_EX.pc_)] == 2) {//预测失败，阻塞下一步，重新进行下一步的执行
+                    defeat++;
+                    predict[hashpc(ID_EX.pc_)]--;
+                    ID_oc = 0, EX_oc = 0;
+                    pc = ID_EX.pc_ + 4;
+                } else {
+                    defeat++;
+                    predict[hashpc(ID_EX.pc_)]--;
+                    ID_oc = 0, EX_oc = 0;
+                    pc = ID_EX.pc_ + 4;
+                }
             }
         }
     } else if (cmd_type == I_l) {//涉及对内存的读写，需要在第四级流水中操作
@@ -426,6 +667,14 @@ void _WB() {//完成对rd寄存器的赋值
     if ((cmd_type != B) && (cmd_type != S)) { reg_to_writenum[rdpos]--; }
     reg[0] = 0;
     WB_oc = false;
+
+
+//    for (int i = 0; i <2000 ; ++i) {
+//        if (predict[i]==0) continue;
+//        cout<<i<<"     ****"<<endl;
+//        cout<<predict[i]<<endl;
+//    }
+
 //    cout<<rs1pos<<"  "<<rs2pos<<" "<<endl;
 //    for (int i = 0; i <=31 ; ++i) {
 //      cout<<"   reg  "<<i<<"   :"<<reg[i]<<endl;
@@ -469,5 +718,7 @@ int main() {
         _ID();
         _IF();
     }
+   // cout<<win<<"    "<<defeat<<endl;
+   // cout<<"     分支预测成功率  ：  "<<double (win/(win+defeat))<<endl;
     printf("%u\n", reg[10] & 255u);
 }
