@@ -1,18 +1,23 @@
 #include <iostream>
+
 using namespace std;
+
 #include <stdio.h>
 #include <stdlib.h>
 #include<string>
+
 int get_bits(int num, int high, int low) {
     int lownum = (1 << (high - low + 1)) - 1;
     return num >> low & (lownum);
 }
+
 unsigned char MEM[500000000];
 unsigned int reg[33] = {0};
 int predict[4096] = {0};//分支预测四位饱和计数器
 int hashpc(int pc) {
-    return( pc / 4 + 11)%4095;
+    return (pc / 4 + 11) % 4095;
 }
+
 int pc = 0, rdpos, rs1pos, rs2pos, imm, rdpos_data, rs1pos_data, rs2pos_data, fun3, fun7;
 int reg_to_writenum[33] = {0};
 int write_rd_data, output;
@@ -23,9 +28,10 @@ bool is_end = false;
 int tempppc = 0;
 int index1 = 0;
 enum cmd_family {
-    U_lui, U_auipc, J, I_jair, B, I_l, S, I_addi, R, I_fence, I_ecall
+    U_lui, U_auipc, J, I_jair, B, I_l, S, I_addi, R, I_fence, I_ecall,other//other 用来处理置空操作，用在回传的ID阶段
 };
 cmd_family cmd_type;
+
 class topass {
 public:
     bool oc;
@@ -33,10 +39,16 @@ public:
     int rd_write_in;
     int core_cmd;
     int menaccess, memload;
+    int forward_rdpos_from_ex, forward_rdposdata_from_ex, forward_rs1pos, forward_rs2pos, forward_rs1posdata, forward_rs2posdata, forward_rdpos_from_mem, forward_rdposdata_from_mem;//forward
+    bool if_forward_from_ex = false, if_forward_from_mem = false;
+    cmd_family forward_from_ex, forward_from_mem;
     cmd_family nowtype;
 
 } IF_ID, ID_EX, EX_MEM, MEM_WB;
+
+bool without_return_from_mem_of_TYPE_B = true;
 bool IF_oc = true, ID_oc = false, EX_oc = false, MEM_oc = false, WB_oc = false;
+
 cmd_family cmd_TYPE_check(int temp) {
     if (temp == 0b0110111) return U_lui;
     else if (temp == 0b0010111) { return U_auipc; }
@@ -50,6 +62,7 @@ cmd_family cmd_TYPE_check(int temp) {
     else if (temp == 0b0001111) { return I_fence; }
     else if (temp == 0b1110011) { return I_ecall; }
 }
+
 int getimm(int index, cmd_family cmdtmp) {
     if (cmdtmp == U_lui || cmdtmp == U_auipc) {
         int nummm = get_bits(index, 31, 12);
@@ -105,8 +118,18 @@ int getimm(int index, cmd_family cmdtmp) {
 
 }
 
+int cntt = 0;
+
 void _IF() {//处理出指令的十进制表示和可能跳转的位置
     if (ID_oc)return;
+
+
+
+   // cout << pc << endl;
+
+
+
+
     index1 = int(MEM[pc]) + int(MEM[pc + 1] << 8) + int(MEM[pc + 2] << 16) + int(MEM[pc + 3] << 24);
     IF_ID.pc_ = pc;
     IF_ID.core_cmd = index1;
@@ -133,50 +156,139 @@ void _ID() {//（解析）处理出操作类型，寄存器对象，寄存器的
         rs2pos = get_bits(IF_ID.core_cmd, 24, 20);
         rs2pos_data = reg[rs2pos];
     }
+
+//    if (cmd_type == B && without_return_from_mem_of_TYPE_B) {
+//        pc = IF_ID.pc_;
+//        EX_oc = 0;
+//        ID_oc = 0;
+//        without_return_from_mem_of_TYPE_B = true;
+//        return;
+//    }
+    //应该是传入的前传的操纵类型是I_l的时候加上特判
+    if (IF_ID.forward_from_ex == I_l) {//直接阻塞有点暴力//可以优化，如果数据不冲突则不阻塞
+        EX_oc = 0;
+        pc = IF_ID.pc_;
+        ID_oc = 0;
+        IF_ID.forward_from_ex=other;
+        //is_end= false;
+        return;
+    }
+
+
+
+//    if (IF_ID.pc_==4248) {
+//        cout << rs1pos_data << "  *** " << rs1pos << " *** " << rs2pos_data << " *** " << rs2pos << "      ";
+//        cout<<IF_ID.if_forward_from_mem<<"  "<<IF_ID.if_forward_from_ex<<"    ";
+//        cout<<"   type:  "<<IF_ID.forward_from_mem<<"     "<<IF_ID.forward_from_ex<<"   ";
+//        cout<< IF_ID.forward_rdpos_from_mem<<"  "<<IF_ID.forward_rdposdata_from_mem<<"   "<<IF_ID.forward_rdpos_from_ex<<"  "<<IF_ID.forward_rdposdata_from_ex<<endl;
+//    }
+
+
+
+    without_return_from_mem_of_TYPE_B = true;
     if ((cmd_type != U_lui) && (cmd_type != U_auipc) && (cmd_type != J)) {
-        if (cmd_type == S || cmd_type == R || cmd_type == B) {
-            if (reg_to_writenum[rs2pos] > 0 || reg_to_writenum[rs1pos] > 0) {
-                EX_oc = 0;
-                ID_oc = 0;
-                pc = IF_ID.pc_;
-                return;
+        if (rs1pos == IF_ID.forward_rdpos_from_mem || rs1pos == IF_ID.forward_rdpos_from_ex) {
+
+//            cout << IF_ID.if_forward_from_mem << "   " << rs1pos << "   " << IF_ID.forward_rdpos_from_mem << "   "
+//                 << IF_ID.forward_from_mem << "   " << IF_ID.if_forward_from_ex << "   " << rs1pos << "  "
+//                 << IF_ID.forward_rdpos_from_ex << "  " << IF_ID.forward_from_ex << endl;
+
+            if (IF_ID.if_forward_from_mem &&
+                rs1pos == IF_ID.forward_rdpos_from_mem &&
+                (IF_ID.forward_from_mem == I_l || IF_ID.forward_from_mem == I_addi || IF_ID.forward_from_mem == R ||
+                 IF_ID.forward_from_mem == J || IF_ID.forward_from_mem == I_jair || IF_ID.forward_from_mem == U_auipc ||
+                 IF_ID.forward_from_mem == U_lui)) {
+
+                rs1pos_data = IF_ID.forward_rdposdata_from_mem;
             }
-        } else {
-            if (reg_to_writenum[rs1pos] > 0) {
-                pc = IF_ID.pc_;
-                EX_oc = 0;
-                ID_oc = 0;
-                return;
+            if (IF_ID.if_forward_from_ex &&
+                rs1pos == IF_ID.forward_rdpos_from_ex &&
+                (IF_ID.forward_from_ex == I_l || IF_ID.forward_from_ex == I_addi || IF_ID.forward_from_ex == R ||
+                 IF_ID.forward_from_ex == J || IF_ID.forward_from_ex == I_jair || IF_ID.forward_from_ex == U_auipc ||
+                 IF_ID.forward_from_ex == U_lui)) {
+
+                rs1pos_data = IF_ID.forward_rdposdata_from_ex;
             }
         }
+        if (rs2pos == IF_ID.forward_rdpos_from_mem || rs2pos == IF_ID.forward_rdpos_from_ex) {
+            if (IF_ID.if_forward_from_mem &&
+                rs2pos == IF_ID.forward_rdpos_from_mem &&
+                (IF_ID.forward_from_mem == I_l || IF_ID.forward_from_mem == I_addi || IF_ID.forward_from_mem == R ||
+                 IF_ID.forward_from_mem == J || IF_ID.forward_from_mem == I_jair ||
+                 IF_ID.forward_from_mem == U_auipc ||
+                 IF_ID.forward_from_mem == U_lui)) { rs2pos_data = IF_ID.forward_rdposdata_from_mem; }
+            if (IF_ID.if_forward_from_ex &&
+                rs2pos == IF_ID.forward_rdpos_from_ex &&
+                (IF_ID.forward_from_ex == I_l || IF_ID.forward_from_ex == I_addi || IF_ID.forward_from_ex == R ||
+                 IF_ID.forward_from_ex == J || IF_ID.forward_from_ex == I_jair || IF_ID.forward_from_ex == U_auipc ||
+                 IF_ID.forward_from_ex == U_lui)) { rs2pos_data = IF_ID.forward_rdposdata_from_ex; }
+        }
     }
-    if ((cmd_type != B) && (cmd_type != S)) { reg_to_writenum[rdpos]++; }
+    //BUG！置零操作，在一般逆序中由于是阻塞所以不用特殊考虑，但是在数据前递中是需要特殊考虑的，原因是按照顺序执行的思路，WB之后零号寄存器置零，但是如果forward，那么传回来的值不一定是0
+    if (rs1pos==0) rs1pos_data=0;
+    if (rs2pos==0)rs2pos_data=0;
+    IF_ID.if_forward_from_mem = false;
+    IF_ID.if_forward_from_ex = false;
+
+
+//    //处理数据冒险
+//    if ((cmd_type != U_lui) && (cmd_type != U_auipc) && (cmd_type != J)) {
+//        if (cmd_type == S || cmd_type == R || cmd_type == B) {
+//            if (reg_to_writenum[rs2pos] > 0 || reg_to_writenum[rs1pos] > 0) {
+//                EX_oc = 0;
+//                ID_oc = 0;
+//                pc = IF_ID.pc_;
+//                return;
+//            }
+//        } else {
+//            if (reg_to_writenum[rs1pos] > 0) {
+//                pc = IF_ID.pc_;
+//                EX_oc = 0;
+//                ID_oc = 0;
+//                return;
+//            }
+//        }
+//    }
+//    if ((cmd_type != B) && (cmd_type != S)) { reg_to_writenum[rdpos]++; }
+//
+
+
+
+
+
+
+
+    //处理控制冒险
     if (cmd_type == J) {
         pc = IF_ID.pc_ + imm;
     }
     if (cmd_type == I_jair) {
         pc = (imm + rs1pos_data) & ~1;
+
+
     }
     if (cmd_type == B) {
         fun3 = get_bits(IF_ID.core_cmd, 14, 12);
         if (fun3 == 0) {//beq
+//            if (IF_ID.pc_==4248) cout<<rs1pos_data<<" "<<rs1pos<<"  "<<rs2pos_data<<"  "<<rs2pos<<endl;
+//            if (IF_ID.pc_==4248&&rs2pos_data==rs1pos_data) cout<<"jummmmp "<<endl;
             if ( (predict[hashpc(IF_ID.pc_)] > 1)) {
                 pc = IF_ID.pc_ + imm;
                 ID_oc = 0;
             }
         } else if (fun3 == 1) {//bne
 
-            if ((predict[hashpc(IF_ID.pc_)] > 1)) {
+            if ( (predict[hashpc(IF_ID.pc_)] > 1)) {
                 pc = IF_ID.pc_ + imm;
                 ID_oc = 0;
             }
         } else if (fun3 == 4) {//blt
-            if ( (predict[hashpc(IF_ID.pc_)] > 1)) {
+            if ((predict[hashpc(IF_ID.pc_)] > 1)) {
                 pc = IF_ID.pc_ + imm;
                 ID_oc = 0;
             }
         } else if (fun3 == 5) {//bge
-            if ( (predict[hashpc(IF_ID.pc_)] > 1)) {
+            if (rs1pos_data >= rs2pos_data && (predict[hashpc(IF_ID.pc_)] > 1)) {
                 pc = IF_ID.pc_ + imm;
                 ID_oc = 0;
             }
@@ -192,7 +304,6 @@ void _ID() {//（解析）处理出操作类型，寄存器对象，寄存器的
             }
         }
     }
-
     ID_oc = false;
     EX_oc = true;
     ID_EX.nowtype = cmd_type;
@@ -205,7 +316,8 @@ void _ID() {//（解析）处理出操作类型，寄存器对象，寄存器的
     ID_EX.imm = imm;
     ID_EX.rd = rdpos;
 };
-int win=0,defeat=0;
+int win = 0, defeat = 0;
+
 void _EX() {//执行出要写入寄存器的值，计算已经解析好的值
     if (!EX_oc || MEM_oc) return;
     cmd_type = ID_EX.nowtype;
@@ -229,7 +341,7 @@ void _EX() {//执行出要写入寄存器的值，计算已经解析好的值
         if (fun3 == 0) {//beq
 
             if (ID_EX.rs1_data == ID_EX.rs2_data) {
-                int x=predict[hashpc(ID_EX.pc_)];
+                int x = predict[hashpc(ID_EX.pc_)];
                 if (predict[hashpc(ID_EX.pc_)] == 0) {//预测失败，阻塞下一步，改变PC
                     defeat++;
                     predict[hashpc(ID_EX.pc_)]++;
@@ -329,7 +441,7 @@ void _EX() {//执行出要写入寄存器的值，计算已经解析好的值
                     win++;
                     EX_oc = 0;
                 }
-            } else{
+            } else {
                 if (predict[hashpc(ID_EX.pc_)] == 0) {
                     win++;
 
@@ -368,7 +480,7 @@ void _EX() {//执行出要写入寄存器的值，计算已经解析好的值
                     win++;
                     EX_oc = 0;
                 }
-            } else{
+            } else {
                 if (predict[hashpc(ID_EX.pc_)] == 0) {
                     win++;
                 } else if (predict[hashpc(ID_EX.pc_)] == 1) {
@@ -406,7 +518,7 @@ void _EX() {//执行出要写入寄存器的值，计算已经解析好的值
                     win++;
                     EX_oc = 0;
                 }
-            } else{
+            } else {
                 if (predict[hashpc(ID_EX.pc_)] == 0) {
                     win++;
 
@@ -446,7 +558,7 @@ void _EX() {//执行出要写入寄存器的值，计算已经解析好的值
                     win++;
                     EX_oc = 0;
                 }
-            } else{
+            } else {
                 if (predict[hashpc(ID_EX.pc_)] == 0) {
                     win++;
                 } else if (predict[hashpc(ID_EX.pc_)] == 1) {
@@ -561,6 +673,7 @@ void _EX() {//执行出要写入寄存器的值，计算已经解析好的值
 
         }
     }
+
     EX_MEM.fun3 = fun3;
     EX_MEM.fun7 = fun7;
     EX_MEM.pc_ = ID_EX.pc_;
@@ -575,6 +688,18 @@ void _EX() {//执行出要写入寄存器的值，计算已经解析好的值
     EX_MEM.rs2_data = ID_EX.rs2_data;
     EX_MEM.nowtype = ID_EX.nowtype;
     EX_MEM.rd = ID_EX.rd;
+
+
+    if(ID_EX.nowtype == I_l || ID_EX.nowtype == I_addi || ID_EX.nowtype == R ||
+     ID_EX.nowtype == J || ID_EX.nowtype == I_jair || ID_EX.nowtype == U_auipc ||
+     ID_EX.nowtype == U_lui) {
+        IF_ID.forward_from_ex = ID_EX.nowtype;
+
+        IF_ID.forward_rdposdata_from_ex = write_rd_data;
+        IF_ID.forward_rdpos_from_ex = ID_EX.rd;
+        IF_ID.if_forward_from_ex = true;
+    }
+
     EX_oc = false;
     MEM_oc = true;
 };
@@ -640,6 +765,21 @@ void _MEM() {//进行对内存的操作，1.从内存读值2.将值写入内存
     MEM_WB.rd = EX_MEM.rd;
     MEM_WB.rd_write_in = write_rd_data;
     MEM_WB.nowtype = EX_MEM.nowtype;
+
+    without_return_from_mem_of_TYPE_B = false;
+
+
+    if(EX_MEM.nowtype == I_l || EX_MEM.nowtype == I_addi || EX_MEM.nowtype == R ||
+       EX_MEM.nowtype == J || EX_MEM.nowtype == I_jair ||
+            EX_MEM.nowtype == U_auipc ||
+       EX_MEM.nowtype == U_lui) {
+        IF_ID.forward_rdpos_from_mem = MEM_WB.rd;
+        IF_ID.forward_rdposdata_from_mem = write_rd_data;
+        IF_ID.if_forward_from_mem = true;  IF_ID.forward_from_mem = MEM_WB.nowtype;
+    }
+
+
+
     WB_oc = true;
     MEM_oc = false;
 };
@@ -669,15 +809,11 @@ void _WB() {//完成对rd寄存器的赋值
     WB_oc = false;
 
 
-//    for (int i = 0; i <2000 ; ++i) {
-//        if (predict[i]==0) continue;
-//        cout<<i<<"     ****"<<endl;
-//        cout<<predict[i]<<endl;
-//    }
+
 
 //    cout<<rs1pos<<"  "<<rs2pos<<" "<<endl;
 //    for (int i = 0; i <=31 ; ++i) {
-//      cout<<"   reg  "<<i<<"   :"<<reg[i]<<endl;
+//        cout<<"   reg  "<<i<<"   :"<<reg[i]<<endl;
 //    }
 };
 
@@ -685,6 +821,8 @@ int main() {
     string input;
     int address = 0;
     //指令的读入
+//     freopen("superloop.data", "r", stdin);
+//     freopen("out.data", "w", stdout);
     while (cin >> input) {
         if (input == "*") break;
         if (input[0] == '@') {
@@ -718,7 +856,5 @@ int main() {
         _ID();
         _IF();
     }
-    // cout<<win<<"    "<<defeat<<endl;
-    // cout<<"     分支预测成功率  ：  "<<double (win/(win+defeat))<<endl;
     printf("%u\n", reg[10] & 255u);
 }
